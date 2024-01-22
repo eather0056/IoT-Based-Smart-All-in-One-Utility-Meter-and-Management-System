@@ -1,0 +1,451 @@
+
+#include <Adafruit_GFX.h>
+#include <SimpleTimer.h>
+#include <Wire.h>
+#include <SPI.h> 
+#include <LiquidCrystal_I2C.h>
+
+
+SimpleTimer timer;
+LiquidCrystal_I2C lcd(0x20,16,2); 
+
+/////////////Water Billing///////////////
+#define FLOWSENSORPIN 2
+volatile uint16_t pulses = 0;
+volatile uint8_t lastflowpinstate;
+volatile uint32_t lastflowratetimer = 0;
+volatile float flowrate;
+float WUP = 14.46;
+float TWC = 0;
+float WK = 0;
+
+SIGNAL(TIMER0_COMPA_vect) {
+uint8_t x = digitalRead(FLOWSENSORPIN);
+  
+  if (x == lastflowpinstate) {
+    lastflowratetimer++;
+    return; 
+  }
+  if (x == HIGH) {
+    
+    pulses++;
+  }
+  lastflowpinstate = x;
+  flowrate = 1000.0;
+  flowrate /= lastflowratetimer; 
+  lastflowratetimer = 0;
+}
+
+void useInterrupt(boolean v) {
+  if (v) {
+    OCR0A = 0xAF;
+    TIMSK0 |= _BV(OCIE0A);
+  } else {
+    TIMSK0 &= ~_BV(OCIE0A);
+  }
+}
+
+/////////////////////////Electric Bill////////////////////////
+        int expectedFrequency = 50;                 // Key in frequency for main grid (50 / 60 hz)
+        int analogInputPin1PA = A2;                 // The input pin for analogRead1 sensor. Use voltage sensor as primary reference here.
+        int analogInputPin2PA = A3;                 // The input pin for analogRead2 sensor. Use current or voltage as secondary reference.
+        float voltageAnalogOffset =0;               // This is to offset analog value for analogInput1
+        float currentAnalogOffset =0;               // This is to offset analog value for analogInput2
+        unsigned long startMicrosPA;                /* start counting time for Phase Angle and Period (in micro seconds)*/
+        unsigned long vCurrentMicrosPA;             /* current time for analogInput1 (voltage) (in micro seconds). AnalogInput1 is used for reference for phase angle*/
+        unsigned long iCurrentMicrosPA;             /* current time for analogInput2 (current/voltage) (in micro seconds).*/
+        unsigned long periodMicrosPA;               /* current time for record period of wave */
+        float vAnalogValue =0;                      /* is the analog value for voltage sensor / analogInput1 and center at 0 value */
+        float iAnalogValue =0;                      /* is the analog value for current sensor / analogInput2 and center at 0 value */
+        float previousValueV =0;                    /* use to record peak value for voltage sensor*/
+        float previousValueI =0;                    /* use to record peak value for current sensro*/
+        float previousphaseAngleSample=0;           /* previous sample reading to replace false value less than 100 micro seconds*/
+        float phaseAngleSample =0;                  /* is the time difference between 2 sensor values (in micro seconds) */
+        float phaseAngleAccumulate =0;              /* is the accumulate time difference for accumulate samples*/
+        float periodSample=0;                       /* is the time difference for a period of wave for a sample (in micro seconds)*/
+        float periodSampleAccumulate = 0;           /* is the accumulate time difference for accumulate samples */
+        float phaseDifference =0;                   /* is the averaged set of time difference of 2 sensors*/
+        float phaseAngle =0;                        /* is the phase angle in degree (out of 360)*/
+        float frequency = 0;                        /* is the frequency of the voltage sensor wave*/
+        float voltagePhaseAngle=0;                  /* is the time recorded from begining to reach peak value for analogInput1 in micro seconds*/
+        float currentPhaseAngle=0;                  /* is the time recorded from begining to reach peak value for analogInput2 in micro seconds*/
+        float averagePeriod =0;                     /* is the average set of time recorded for a period of wave */
+        int sampleCount = 0;                        /* to count how many set of samples */
+        int a = 3;                                  /* use for switching operation*/
+        float powerFactor;                          /* to calculate power factor */
+        float poweru = 0;                           /* Power used by the consuer*/
+        float KWH    = 0;                           /* Total ussed unit*/
+        float EUP    = 8;                           /* Per unit price of electricity */
+        float EB     = 0;                           /* Total Electrical Bill*/
+
+
+            /* 1.1 - Phase Angle Offset*/
+
+            float currentOffsetRead =0;
+            float currentOffsetLastSample =0;
+            float currentOffsetSampleCount=0;
+            float voltageOffsetRead =0;
+            float voltageOffsetLastSample =0;
+            float voltageOffsetSampleCount=0;
+            
+///////////////////////////////////Gas////////////////////////////////
+           int Gin = A1;
+           float gasfv =0;
+           float gv =0;
+           float GU =0;
+           float GC =0;
+           float GUP = 115;
+
+///////////////////////////////////////////////////////////////////////
+          float TotalBi =0;
+          float NetBa =0;
+          float Cbalance = 5000; 
+          int lamp = 6;
+          int buzzer = 7;          
+
+void setup()
+{
+  Wire.begin();
+   Serial.begin(9600);
+   Serial.print("Smart Billing!");
+  lcd.init();                 
+  lcd.backlight();
+
+pinMode(FLOWSENSORPIN, INPUT);
+   digitalWrite(FLOWSENSORPIN, HIGH);
+   lastflowpinstate = digitalRead(FLOWSENSORPIN);
+   useInterrupt(true);
+
+   pinMode(lamp, OUTPUT);
+   pinMode(buzzer, OUTPUT);
+   pinMode(Gin, INPUT);
+   pinMode(analogInputPin2PA, INPUT);
+   pinMode(analogInputPin1PA, INPUT);
+}
+
+void loop()
+{
+////////////////Water Billing///////////////////
+ Serial.println("/////////////Water Bill//////////////////");
+  Serial.print("Pulses: ");
+  Serial.println(pulses, DEC);
+  float liters = pulses;
+  liters /= 7.5;
+  liters /= 60.0;
+  WK = liters /1000;
+  TWC = WK * WUP;
+  
+  Serial.print("Water Used: ");
+  Serial.print(liters);
+  Serial.println(" L");
+  
+  lcd.setCursor(0, 1);
+  lcd.print("Water used: ");
+  lcd.print(liters);
+
+  Serial.print("Water Bill: ");
+  Serial.print(TWC);
+  Serial.println(" Taka");
+
+  delay(100);
+  
+///////////////////////////////////Electric Billing System ///////////////////////////
+
+        /* 1 - Phase Angle, Frequency and Power Factor measurement */
+        
+        vAnalogValue = analogRead(analogInputPin1PA)-512 + voltageAnalogOffset;       /* read analogInput1 with center adjusted*/
+        iAnalogValue = analogRead(analogInputPin2PA)-512 + currentAnalogOffset;       /* read analogInput2 with center adjusted*/
+
+        if((vAnalogValue>0) && a == 3)                                          /* initial begining stage of measurement when analogInput1 wave larger than 0 */
+        {
+          a=0;                                                                  /* allow to change to the next stage */
+        }
+        
+        if((vAnalogValue<=0) && a ==0)                                          /* when analog value of analogInput1 smaller or equal than 0*/
+        {
+          startMicrosPA = micros();                                             /* start counting time for all*/
+          a=1;                                                                  /* allow to change to the next stage */
+        }
+        
+        if((vAnalogValue>0) && a ==1)                                           /* when analog value of analogInput1 larger than 0*/
+        {
+          a = 2;                                                                /* allow to change to the next stage */
+          previousValueV = 0;                                                   /* reset value. This value to be compared to measure peak value for analogInput1 */
+          previousValueI = 0;                                                   /* reset value. This value to be compared to measure peak value for analogInput2 */
+        }  
+     
+        if((vAnalogValue > previousValueV ) && a==2)                            /* if current measured value larger than previous peak value of analogInput1 */
+        {
+          previousValueV = vAnalogValue ;                                       /* record current measure value replace previous peak value */
+          vCurrentMicrosPA = micros();                                          /* record current time for analogInput1 */
+        }
+        
+        if((iAnalogValue > previousValueI) && a==2)                             /* if current measured value larger than previous peak value of analogInput2 */
+        {
+          previousValueI = iAnalogValue ;                                       /* record current measure value replace previous peak value */
+          iCurrentMicrosPA = micros();                                          /* record current time for analogInput2 */
+        }
+  
+        if((vAnalogValue <=0) && a==2)                                          /* when analog value of analogInput1 smaller or equal than 0*/
+        {
+          periodMicrosPA = micros();                                            /* record current time for 1 period */
+          periodSample = periodMicrosPA - startMicrosPA;                        /* period wave is the current time minus the starting time (for 1 sample)*/
+          periodSampleAccumulate = periodSampleAccumulate + periodSample;       /* accumulate or add up time for all sample readings of period wave */
+          voltagePhaseAngle = vCurrentMicrosPA - startMicrosPA;                 /* time taken for analogInput1 from 0 (down wave) to peak value (up wave)*/
+          currentPhaseAngle = iCurrentMicrosPA - startMicrosPA;                 /* time taken for analogInput2 from 0 (down wave) to peak value (up wave)*/
+          phaseAngleSample = currentPhaseAngle - voltagePhaseAngle;             /* time difference between analogInput1 peak value and analogInput2 peak value*/
+          if(phaseAngleSample>=100)                                             /* if time difference more than 100 micro seconds*/
+          {
+          previousphaseAngleSample = phaseAngleSample;                          /* replace previous value using new current value */ 
+          }
+          if(phaseAngleSample<100)                                              /* if time difference less than 100 micro seconds (might be noise or fake values)*/
+          {
+          phaseAngleSample = previousphaseAngleSample;                          /* take previous value instead using low value*/
+          }
+          phaseAngleAccumulate = phaseAngleAccumulate + phaseAngleSample;       /* accumulate or add up time for all sample readings of time difference */
+          sampleCount = sampleCount + 1;                                        /* count sample number */
+          startMicrosPA = periodMicrosPA;                                       /* reset begining time */
+          a=1;                                                                  /* reset stage mode */
+          previousValueV = 0;                                                   /* reset peak value for analogInput1 for next set */
+          previousValueI = 0;                                                   /* reset peak value for analogInput2 for next set */
+        }
+
+        if(sampleCount == expectedFrequency)                                          /* if number of total sample recorded equal 50 by default */
+        {
+          averagePeriod = periodSampleAccumulate/sampleCount;                         /* average time for a period of wave from all the sample readings*/
+          frequency = 1000000 / averagePeriod;                                        /* the calculated frequency value */
+          phaseDifference = phaseAngleAccumulate / sampleCount;                       /* average time difference between 2 sensor peak values from all the sample readings */
+          phaseAngle = ((phaseDifference*360) / averagePeriod);                       /* the calculated phase angle in degree (out of 360)*/
+          powerFactor = cos(phaseAngle*0.017453292);                                  /* power factor. Cos is in radian, the formula on the left has converted the degree to rad. */
+//          Serial.print("Phase Angle :");
+//          Serial.print(phaseAngle);
+//          Serial.print("Â°  ");
+//          Serial.print("Frequency :");
+//          Serial.print(frequency);
+//          Serial.print("Hz  ");
+//          Serial.print("Power Factor :");
+//          Serial.println(powerFactor);
+          sampleCount = 0;                                                            /* reset the sample counting quantity */
+          periodSampleAccumulate = 0;                                                 /* reset the accumulated time for period wave from all samples */
+          phaseAngleAccumulate =0;                                                    /* reset the accumulated time for time difference from all samples*/
+        
+          /* 2 - LCD Display  */
+        
+          lcd.setCursor(0,0);                                                       /* Set cursor to first colum 0 and second row 1  */
+          lcd.print("P. Angle =");
+          lcd.print(phaseAngle);                                   /* display current value in LCD in first row  */
+          lcd.print((char)223);
+          lcd.print("    ");
+          lcd.setCursor(0,1); 
+          lcd.print(frequency);
+          lcd.print("Hz  ");
+          lcd.print(powerFactor);                                  /* display current value in LCD in first row  */
+          lcd.print("PF    ");
+        
+        }
+
+    poweru = iAnalogValue * iAnalogValue* powerFactor;
+    KWH = KWH + (poweru * (2.05/60/60/1000));
+
+    EB = KWH*EUP;
+    
+          Serial.println("/////////////Electrical Bill//////////////////");
+          Serial.print("P. Angle =");
+          Serial.println(phaseAngle);                                   /* display current value in LCD in first row  */
+          Serial.print("P. Frequency =");
+          Serial.print(frequency);
+          Serial.println("Hz  ");
+          Serial.print("P. Powerfactor =");
+          Serial.print(powerFactor);                                  /* display current value in LCD in first row  */
+          Serial.println("PF    ");
+          Serial.print("Power Used =");
+          Serial.print(KWH);                                  /* display current value in LCD in first row  */
+          Serial.println(" U    ");
+          Serial.print("Total Electric Bill =");
+          Serial.print(EB);                                  /* display current value in LCD in first row  */
+          Serial.println(" Taka");
+
+              
+/////////////////////////////////////////////////////////Gas Bill ///////////////////////////////////////////////////////////////////////
+
+           gasfv = analogRead(Gin)*5.0/1023;  //domestic LPG cylinders pressure avagrage 800 KPa and flow rate around 2 Kg/H
+
+           gv = gasfv*(5/(60*60));  // The amount of gas pass in that moment
+
+           GU = GU + gv;           // the total amount of gas 
+           GC = GU * GUP;         // the total gas price
+
+           Serial.println("/////////////Gass Bill//////////////////");
+           Serial.print("The amount of gas used: ");
+           Serial.print(GU);
+           Serial.println(" Kg");
+           Serial.print("The total gas bill: ");
+           Serial.print(GC);
+           Serial.println(" Taka");
+           
+
+
+
+
+///////////////////////////////////Total Utiity Bill ///////////////////////////////////////
+
+          lcd.clear();
+          lcd.setCursor(0,0);
+          lcd.print("S. Utility Bill");
+          delay(1000);
+
+          lcd.clear();
+          lcd.setCursor(0,0);
+          lcd.print("Electricity bill");
+          delay(1000);
+          lcd.clear();
+          lcd.setCursor(0,0);
+          lcd.print("KWH: ");
+          lcd.setCursor(5,0);
+          lcd.print(KWH);
+          lcd.setCursor(11,0);
+          lcd.print("U");
+          lcd.setCursor(0,1);
+          lcd.print("Bill: ");
+          lcd.setCursor(7,1);
+          lcd.print(EB);
+          lcd.setCursor(12,1);
+          lcd.print("Tk");
+          delay(3000);
+
+
+          lcd.clear();
+          lcd.setCursor(0,0);
+          lcd.print("Gas bill");
+          delay(1000);
+          lcd.clear();
+          lcd.setCursor(0,0);
+          lcd.print("Gas U.: ");
+          lcd.setCursor(9,0);
+          lcd.print(GU);
+          lcd.setCursor(14,0);
+          lcd.print("Kg");
+          lcd.setCursor(0,1);
+          lcd.print("Bill: ");
+          lcd.setCursor(7,1);
+          lcd.print(GC);
+          lcd.setCursor(12,1);
+          lcd.print("Tk");
+          delay(3000);
+
+          
+          lcd.clear();
+          lcd.setCursor(0,0);
+          lcd.print("Water bill");
+          delay(1000);
+          lcd.clear();
+          lcd.setCursor(0,0);
+          lcd.print("Water U.: ");
+          lcd.setCursor(10,0);
+          lcd.print(liters);
+          lcd.setCursor(15,0);
+          lcd.print("L");
+          lcd.setCursor(0,1);
+          lcd.print("Bill: ");
+          lcd.setCursor(7,1);
+          lcd.print(TWC);
+          lcd.setCursor(12,1);
+          lcd.print("Tk");
+          delay(3000);
+          
+          Serial.println("S. Utility Bill");
+          Serial.println("Electricity bill");
+          Serial.print("KWH: ");
+          Serial.print(KWH);
+          Serial.println("U");
+          Serial.print("Bill: ");
+          Serial.print(EB);
+          Serial.println("Tk");
+          Serial.println("Gas bill");
+          Serial.print("Gas U.: ");
+          Serial.print(GU);
+          Serial.println("Kg");
+          Serial.print("Bill: ");
+          Serial.print(GC);
+          Serial.println("Tk");
+          Serial.println("Water bill");
+          Serial.print("Water U.: ");
+          Serial.print(liters);
+          Serial.println("L");
+          Serial.print("Bill: ");
+          Serial.print(TWC);
+          Serial.println("Tk");
+
+          TotalBi = TWC + GC + EB;
+
+          NetBa = Cbalance - TotalBi;
+
+          lcd.clear();
+          lcd.setCursor(0,0);
+          lcd.print("T. Bill:");
+          lcd.setCursor(9,0);
+          lcd.print(TotalBi);
+          lcd.setCursor(15,0);
+          lcd.print("Tk");
+ 
+          lcd.setCursor(0,0);
+          lcd.print("C. Bill:");
+          lcd.setCursor(9,0);
+          lcd.print(NetBa);
+          lcd.setCursor(15,0);
+          lcd.print("Tk");
+
+          Serial.println(" ");
+          Serial.print("T. Bill:");
+          Serial.print(TotalBi);
+          Serial.println("Tk");
+          
+          Serial.println(" ");
+          Serial.print("C. Bill:");
+          Serial.print(NetBa);
+          Serial.println("Tk");
+
+
+
+
+
+          if(NetBa >=5000)
+          {Serial.println("Stable Balance");
+          lcd.clear();
+          lcd.print("Stable Balance");
+          delay(1000);
+          digitalWrite(lamp,LOW);
+           digitalWrite(buzzer,LOW);
+           } 
+           
+          else if(NetBa <=5000 && NetBa >=2000)
+          {Serial.println("Moderat Balance");
+          lcd.clear();
+          lcd.print("Moderat Balance");
+          digitalWrite(lamp,LOW);
+           digitalWrite(buzzer,LOW);
+          delay(1000);
+          
+           }
+           
+           else if(NetBa <=2000 && NetBa >=500)
+          {Serial.println("Low Balance");
+          lcd.clear();
+          lcd.print("Low Balance");
+          digitalWrite(lamp,HIGH);
+           digitalWrite(buzzer,LOW);
+          delay(1000);
+
+           }
+
+          else if(NetBa <=500)
+          {Serial.println("Very Low Balance");
+          lcd.clear();
+          lcd.print("Very L. Balance");
+          
+          digitalWrite(lamp,HIGH);
+          digitalWrite(buzzer,HIGH);
+          delay(1000);
+           }
+
+}
